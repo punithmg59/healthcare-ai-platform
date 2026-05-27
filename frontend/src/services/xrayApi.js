@@ -1,6 +1,6 @@
-import axios from 'axios';
+import api from './api';
 
-const API_BASE_URL = 'http://127.0.0.1:8000/api/xray';
+const BASE = '/api/xray';
 
 /**
  * Uploads an X-ray image for AI analysis
@@ -12,7 +12,7 @@ export const uploadXray = async (file) => {
   formData.append('file', file);
 
   try {
-    const response = await axios.post(`${API_BASE_URL}/predict`, formData, {
+    const response = await api.post(`${BASE}/predict`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -30,11 +30,12 @@ export const uploadXray = async (file) => {
  */
 export const getXrayHistory = async () => {
   try {
-    const response = await axios.get(`${API_BASE_URL}/history`);
+    const response = await api.get(`${BASE}/history`);
     return response.data;
   } catch (error) {
     console.error('Error fetching history:', error);
-    throw error.response?.data || { detail: 'Failed to fetch history' };
+    // Return empty array as graceful fallback to prevent crash
+    return [];
   }
 };
 
@@ -45,7 +46,7 @@ export const getXrayHistory = async () => {
  */
 export const getXrayReportById = async (id) => {
   try {
-    const response = await axios.get(`${API_BASE_URL}/report/${id}`);
+    const response = await api.get(`${BASE}/report/${id}`);
     return response.data;
   } catch (error) {
     console.error('Error fetching report:', error);

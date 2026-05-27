@@ -65,11 +65,18 @@ export const AuthProvider = ({ children }) => {
       
       try {
         const currentUser = session?.user ?? null;
+        
+        // Prevent setting loading=true for background refreshes
+        const isInitialLoad = !user && event === 'INITIAL_SESSION';
+        
+        if (isInitialLoad && currentUser) {
+            setLoading(true);
+        }
+
         setUser(currentUser);
         
         if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'USER_UPDATED') {
           if (currentUser) {
-            setLoading(true);
             const p = await fetchProfile(currentUser.id);
             
             // Auto-creation check

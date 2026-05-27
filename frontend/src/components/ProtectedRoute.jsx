@@ -12,7 +12,7 @@ const ProtectedRoute = ({ children }) => {
   React.useEffect(() => {
     let timer;
     if (loading) {
-      timer = setTimeout(() => setShowRetry(true), 6000);
+      timer = setTimeout(() => setShowRetry(true), 12000); // Increased from 6s to 12s
     }
     return () => clearTimeout(timer);
   }, [loading]);
@@ -27,7 +27,7 @@ const ProtectedRoute = ({ children }) => {
             animate={{ opacity: 1, y: 0 }}
             className="text-center px-4"
           >
-            <p className="text-slate-400 mb-4 font-medium">Connection is taking longer than expected...</p>
+            <p className="text-slate-400 mb-4 font-medium">Backend connection is taking longer than expected. Retrying...</p>
             <button 
               onClick={() => window.location.reload()}
               className="px-6 py-2 rounded-xl bg-white/5 border border-white/10 text-white text-sm hover:bg-white/10 transition-all"

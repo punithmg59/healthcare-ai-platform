@@ -1,232 +1,153 @@
 import os
 import re
+import uuid
 import logging
-from typing import Dict, Optional, List, Tuple
-from pathlib import Path
+from fastapi import UploadFile
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-try:
-    from paddleocr import PaddleOCR
-    # Initialize OCR model
-    ocr = PaddleOCR(use_angle_cls=True, lang='en')
-    OCR_AVAILABLE = True
-except Exception as e:
-    ocr = None
-    OCR_AVAILABLE = False
-    logger.warning(f"PaddleOCR load error: {e}")
+# Lazy loading of PaddleOCR to avoid massive startup overhead
+_ocr_engine = None
 
-try:
-    from pdf2image import convert_from_path
-    PDF_AVAILABLE = True
-except Exception as e:
-    PDF_AVAILABLE = False
-    logger.warning(f"pdf2image not available: {e}")
+def get_ocr_engine():
+    global _ocr_engine
+    if _ocr_engine is None:
+        try:
+            logger.info("⏳ Loading PaddleOCR engine...")
+            from paddleocr import PaddleOCR
+            # use_angle_cls=True for image rotation, lang='en' for English
+            _ocr_engine = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+            logger.info("✅ PaddleOCR engine loaded.")
+        except Exception as e:
+            logger.error(f"❌ Error loading PaddleOCR: {e}")
+            raise RuntimeError(f"OCR Engine failed to load: {e}")
+    return _ocr_engine
 
-
-def extract_text_from_document(file_path: str) -> str:
+async def process_report_for_extraction(file: UploadFile):
     """
-    Extract raw text from document (image or PDF)
-    
-    Args:
-        file_path: Path to document file
-        
-    Returns:
-        Extracted text
+    Reads an uploaded image/PDF, extracts text via OCR, and parses medical metrics.
     """
-    if not OCR_AVAILABLE or ocr is None:
-        logger.warning("OCR not available")
-        return ""
-    
     try:
-        file_ext = Path(file_path).suffix.lower()
+        file_bytes = await file.read()
+        file_ext = os.path.splitext(file.filename)[1].lower()
         
-        # Handle PDF files
-        if file_ext == '.pdf' and PDF_AVAILABLE:
+        extracted_text = ""
+        
+        # Determine if PDF or Image
+        if file_ext == '.pdf':
             try:
-                images = convert_from_path(file_path)
-                all_text = []
-                for image in images:
-                    # Save image temporarily
-                    temp_path = f"/tmp/ocr_temp_{Path(file_path).stem}.png"
-                    image.save(temp_path)
-                    
-                    result = ocr.ocr(temp_path, cls=True)
-                    if result:
-                        for block in result:
-                            if block:
-                                for line in block:
-                                    all_text.append(line[1][0])
-                    
-                    # Clean up
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
+                import fitz  # PyMuPDF
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
+                for page in doc:
+                    extracted_text += page.get_text() + "\n"
                 
-                return " ".join(all_text)
+                # If the PDF is just scanned images, the text might be empty or very short.
+                # In that case, we fallback to rendering the page to an image and running OCR.
+                if len(extracted_text.strip()) < 50:
+                    logger.info("PDF text too short, falling back to OCR on rendered pages...")
+                    extracted_text = ""
+                    ocr = get_ocr_engine()
+                    for page in doc:
+                        pix = page.get_pixmap()
+                        img_bytes = pix.tobytes("png")
+                        
+                        # Save temporarily for PaddleOCR (or pass bytes if supported)
+                        temp_path = f"temp_ocr_{uuid.uuid4().hex}.png"
+                        with open(temp_path, "wb") as f:
+                            f.write(img_bytes)
+                            
+                        result = ocr.ocr(temp_path, cls=True)
+                        if result and result[0]:
+                            for line in result[0]:
+                                extracted_text += line[1][0] + "\n"
+                                
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
             except Exception as e:
-                logger.error(f"PDF processing error: {e}")
-                return ""
-        
-        # Handle image files
-        elif file_ext in ['.jpg', '.jpeg', '.png', '.bmp']:
-            result = ocr.ocr(file_path, cls=True)
-            extracted_text = ""
-            if result:
-                for block in result:
-                    if block:
-                        for line in block:
-                            extracted_text += line[1][0] + " "
-            return extracted_text
-        
+                logger.error(f"PDF extraction failed: {e}")
+                raise ValueError("Failed to read PDF document.")
         else:
-            logger.warning(f"Unsupported file type: {file_ext}")
-            return ""
-            
-    except Exception as e:
-        logger.error(f"Error extracting text: {e}")
-        return ""
-
-
-def extract_medical_values(image_path: str) -> Dict:
-    """
-    Extracts medical values from a document image.
-    Targets: cholesterol, glucose (fbs), blood pressure (trestbps),
-    and heart rate (thalach), ECG values, MRI findings, etc.
-    """
-    if ocr is None:
-        logger.warning("OCR is not available.")
-        return {}
-        
-    try:
-        result = ocr.ocr(image_path, cls=True)
-    except Exception as e:
-        logger.error(f"OCR processing error: {e}")
-        return {}
-    
-    extracted_text = ""
-    if result:
-        for idx in range(len(result)):
-            res = result[idx]
-            if not res:
-                continue
-            for line in res:
-                extracted_text += line[1][0] + " "
+            # Handle standard images
+            try:
+                ocr = get_ocr_engine()
+                temp_path = f"temp_ocr_{uuid.uuid4().hex}{file_ext}"
+                with open(temp_path, "wb") as f:
+                    f.write(file_bytes)
                 
-    extracted_text = extracted_text.lower()
-    logger.info(f"Extracted Text from {Path(image_path).name}: {extracted_text[:200]}...")
-    
-    extracted_values = {}
-    
-    # 1. Cholesterol (mg/dL)
-    chol_match = re.search(r'(?:cholesterol|chol|total chol)\s*[:-]?\s*(\d{2,3}(?:\.\d+)?)', extracted_text)
-    if chol_match:
-        extracted_values['chol'] = float(chol_match.group(1))
-        logger.info(f"Found cholesterol: {extracted_values['chol']}")
+                result = ocr.ocr(temp_path, cls=True)
+                if result and result[0]:
+                    for line in result[0]:
+                        extracted_text += line[1][0] + "\n"
+                
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception as e:
+                logger.error(f"Image extraction failed: {e}")
+                raise ValueError("Failed to process image for OCR.")
+
+        # Now we parse the text
+        parsed_data = parse_medical_text(extracted_text)
         
-    # 2. Glucose / Fasting Blood Sugar (mg/dL)
-    glucose_match = re.search(r'(?:glucose|fbs|blood sugar|fasting blood sugar)\s*[:-]?\s*(\d{2,3}(?:\.\d+)?)', extracted_text)
-    if glucose_match:
-        glucose_val = float(glucose_match.group(1))
-        extracted_values['glucose'] = glucose_val
-        extracted_values['fbs'] = 1 if glucose_val > 120 else 0
-        logger.info(f"Found glucose: {glucose_val}, fbs classification: {extracted_values['fbs']}")
-        
-    # 3. Blood Pressure (systolic/diastolic)
-    bp_match = re.search(r'(?:blood pressure|bp|bp:)\s*[:\-]?\s*(\d{2,3})\s*[/\\]\s*(\d{2,3})', extracted_text)
-    if bp_match:
-        systolic = float(bp_match.group(1))
-        diastolic = float(bp_match.group(2))
-        extracted_values['trestbps'] = systolic
-        extracted_values['bp_diastolic'] = diastolic
-        logger.info(f"Found BP: {systolic}/{diastolic}")
-    else:
-        # Fallback if it just says systolic
-        sys_match = re.search(r'(?:systolic|sys)\s*[:-]?\s*(\d{2,3})', extracted_text)
-        if sys_match:
-            extracted_values['trestbps'] = float(sys_match.group(1))
-            logger.info(f"Found systolic: {extracted_values['trestbps']}")
+        return {
+            "success": True,
+            "raw_text": extracted_text,
+            "extracted_data": parsed_data
+        }
+
+    except Exception as e:
+        logger.error(f"OCR Extraction Error: {e}")
+        return {"success": False, "error": str(e)}
+
+def parse_medical_text(text: str) -> dict:
+    """
+    Uses regex to extract common medical metrics from OCR text.
+    """
+    text = text.lower()
+    data = {}
+    
+    # Extract Age
+    age_match = re.search(r'(?:age|yr|yrs|y/o|years old)[\s:\-]+(\d{1,3})', text)
+    if age_match:
+        age = int(age_match.group(1))
+        if 0 < age < 120:
+            data['age'] = age
             
-    # 4. Max Heart Rate / Heart Rate (bpm)
-    hr_match = re.search(r'(?:heart rate|hr|pulse|max\s*hr|max heart rate)\s*[:-]?\s*(\d{2,3})', extracted_text)
+    # Extract Sex/Gender
+    if re.search(r'\b(?:sex|gender)[\s:\-]+male\b', text) or re.search(r'\b(?:m|male)\b(?!\s*l\/)', text):
+        data['sex'] = 1 # Male
+    elif re.search(r'\b(?:sex|gender)[\s:\-]+female\b', text) or re.search(r'\b(?:f|female)\b', text):
+        data['sex'] = 0 # Female
+
+    # Extract BP (trestbps)
+    # Looks for something like "120/80" or "BP 140/90"
+    bp_match = re.search(r'(?:bp|blood pressure)?\s*(\d{2,3})\s*/\s*(\d{2,3})', text)
+    if bp_match:
+        systolic = int(bp_match.group(1))
+        if 70 < systolic < 250:
+            data['trestbps'] = systolic
+
+    # Extract Cholesterol (chol)
+    chol_match = re.search(r'(?:cholesterol|chol)[\s:\-]+(\d{2,3})', text)
+    if chol_match:
+        chol = int(chol_match.group(1))
+        if 100 < chol < 600:
+            data['chol'] = chol
+
+    # Extract Heart Rate (thalach)
+    hr_match = re.search(r'(?:heart rate|pulse|hr|bpm)[\s:\-]+(\d{2,3})', text)
     if hr_match:
-        extracted_values['thalach'] = float(hr_match.group(1))
-        logger.info(f"Found heart rate: {extracted_values['thalach']}")
-    
-    # 5. ECG values and findings
-    ecg_findings = []
-    if 'normal' in extracted_text and 'ecg' in extracted_text:
-        ecg_findings.append('Normal ECG')
-    if 'st elevation' in extracted_text:
-        ecg_findings.append('ST Elevation')
-    if 'st depression' in extracted_text:
-        ecg_findings.append('ST Depression')
-    if 'arrhythmia' in extracted_text or 'irregular' in extracted_text:
-        ecg_findings.append('Arrhythmia')
-    
-    if ecg_findings:
-        extracted_values['ecg_findings'] = ecg_findings
-        logger.info(f"Found ECG findings: {ecg_findings}")
-    
-    # 6. Other cardiac values
-    # LDL Cholesterol
-    ldl_match = re.search(r'(?:ldl|bad cholesterol)\s*[:-]?\s*(\d{2,3}(?:\.\d+)?)', extracted_text)
-    if ldl_match:
-        extracted_values['ldl'] = float(ldl_match.group(1))
-    
-    # HDL Cholesterol
-    hdl_match = re.search(r'(?:hdl|good cholesterol)\s*[:-]?\s*(\d{2,3}(?:\.\d+)?)', extracted_text)
-    if hdl_match:
-        extracted_values['hdl'] = float(hdl_match.group(1))
-    
-    # Triglycerides
-    trig_match = re.search(r'(?:triglyceride|triglycerides)\s*[:-]?\s*(\d{2,3}(?:\.\d+)?)', extracted_text)
-    if trig_match:
-        extracted_values['triglycerides'] = float(trig_match.group(1))
-    
-    # 7. Abnormal findings
-    abnormalities = []
-    abnormal_keywords = ['abnormal', 'abnormality', 'finding', 'abnormal finding', 'pathology']
-    for keyword in abnormal_keywords:
-        if keyword in extracted_text:
-            # Try to extract the finding
-            pattern = rf'{keyword}[:\-]?\s*([^.\n]+)'
-            match = re.search(pattern, extracted_text)
-            if match:
-                finding = match.group(1).strip()
-                if finding and len(finding) > 3:
-                    abnormalities.append(finding)
-    
-    if abnormalities:
-        extracted_values['abnormalities'] = abnormalities
-        logger.info(f"Found abnormalities: {abnormalities}")
-    
-    # 8. MRI/Imaging findings
-    if any(term in extracted_text for term in ['mri', 'scan', 'imaging', 'ct scan', 'x-ray']):
-        extracted_values['has_imaging'] = True
-        
-        # Look for specific findings
-        if 'lesion' in extracted_text:
-            extracted_values['imaging_finding'] = 'Lesion detected'
-        elif 'mass' in extracted_text:
-            extracted_values['imaging_finding'] = 'Mass detected'
-        elif 'infarction' in extracted_text:
-            extracted_values['imaging_finding'] = 'Infarction detected'
-    
-    logger.info(f"Final extracted values: {extracted_values}")
-    return extracted_values
-
-
-def extract_all_text_with_medical_values(image_path: str) -> Tuple[str, Dict]:
-    """
-    Extract both raw text and medical values from a document
-    
-    Args:
-        image_path: Path to image file
-        
-    Returns:
-        Tuple of (extracted_text, medical_values_dict)
-    """
-    raw_text = extract_text_from_document(image_path)
-    medical_values = extract_medical_values(image_path)
-    return raw_text, medical_values
+        hr = int(hr_match.group(1))
+        if 40 < hr < 220:
+            data['thalach'] = hr
+            
+    # Extract Fasting Blood Sugar (fbs)
+    fbs_match = re.search(r'(?:fasting blood sugar|fbs|glucose)[\s:\-]+(\d{2,3})', text)
+    if fbs_match:
+        fbs = int(fbs_match.group(1))
+        data['glucose'] = fbs
+        if fbs > 120:
+            data['fbs'] = 1
+        else:
+            data['fbs'] = 0
+            
+    return data

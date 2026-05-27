@@ -90,9 +90,11 @@ async def get_brain_report(report_id: int):
 @router.get("/health")
 def brain_health_check():
     """Health check for brain tumor module."""
-    from services.brain_service import predictor
+    from services.brain_service import get_predictor
+    # Check if the model is currently initialized without loading it
+    from services.brain_service import _predictor
     return {
         "status": "ok",
         "module": "Brain Tumor MRI AI Core",
-        "model_loaded": predictor.is_loaded()
+        "model_loaded": _predictor is not None
     }

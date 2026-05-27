@@ -44,15 +44,13 @@ export default function BrainTumor() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      // Update to new endpoint
-      const res = await axios.post('http://127.0.0.1:8000/api/brain/predict', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 60000,
-      });
-      // Navigate to the unified professional report page
+      
+      const { predictBrainTumor } = await import('../services/api');
+      const res = await predictBrainTumor(formData);
+      
       navigate('/report', { state: { result: { ...res.data, type: 'mri' } } });
     } catch (err) {
-      setError(err.response?.data?.detail || 'Brain tumor prediction service is currently unavailable.');
+      setError(err.response?.data?.detail || err.message || 'Brain tumor service unavailable.');
     } finally {
       setLoading(false);
     }

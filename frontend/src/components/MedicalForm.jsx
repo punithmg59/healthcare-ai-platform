@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   User,
   Activity,
@@ -12,12 +12,17 @@ import {
   TrendingUp,
   Brain,
   Cigarette,
-  Dna
+  Dna,
+  Upload,
+  Loader2,
+  CheckCircle2,
+  FileText
 } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import useStore from '../store/useStore';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { extractReport } from '../services/api';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -25,6 +30,10 @@ function cn(...inputs) {
 
 export default function MedicalForm({ onSubmit, loading }) {
   const { formData, setFormData } = useStore();
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrSuccess, setOcrSuccess] = useState(false);
+  const [ocrError, setOcrError] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -36,11 +45,99 @@ export default function MedicalForm({ onSubmit, loading }) {
     setFormData({ [name]: value });
   };
 
+  const handleOcrUpload = async (file) => {
+    if (!file) return;
+    setOcrLoading(true);
+    setOcrSuccess(false);
+    setOcrError(null);
+
+    try {
+      const payload = new FormData();
+      payload.append('file', file);
+      
+      const response = await extractReport(payload);
+      
+      if (response && response.data && response.data.success) {
+        const extracted = response.data.extracted_data;
+        if (Object.keys(extracted).length > 0) {
+            setFormData({ ...formData, ...extracted });
+            setOcrSuccess(true);
+            setTimeout(() => setOcrSuccess(false), 5000);
+        } else {
+            setOcrError("No health values could be extracted.");
+        }
+      } else {
+        setOcrError(response?.message || "Failed to extract data.");
+      }
+    } catch (err) {
+      setOcrError("An error occurred during extraction.");
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
   const inputClasses = "glass-input w-full px-4 py-3 rounded-2xl text-sm font-medium text-white transition-all";
   const labelClasses = "text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2 mb-2";
 
   return (
     <div className="flex flex-col gap-8 h-full custom-scrollbar overflow-y-auto pr-2">
+      
+      {/* Auto-Fill OCR Section */}
+      <section className="relative">
+        <div 
+          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsDragging(false);
+            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+              handleOcrUpload(e.dataTransfer.files[0]);
+            }
+          }}
+          className={cn(
+            "relative w-full rounded-2xl border-2 border-dashed p-6 transition-all duration-300 flex flex-col items-center justify-center text-center",
+            isDragging ? "border-indigo-500 bg-indigo-500/10" : "border-white/10 hover:border-white/20 bg-slate-900/40"
+          )}
+        >
+            <input 
+                type="file" 
+                accept="image/*,.pdf"
+                onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                        handleOcrUpload(e.target.files[0]);
+                    }
+                }}
+                className="absolute inset-0 opacity-0 cursor-pointer z-10"
+            />
+            <div className="flex flex-col items-center pointer-events-none">
+                {ocrLoading ? (
+                    <>
+                        <Loader2 className="w-8 h-8 text-indigo-400 animate-spin mb-3" />
+                        <h4 className="text-sm font-bold text-white">Extracting Clinical Data...</h4>
+                        <p className="text-xs text-slate-400 mt-1">Applying OCR & NLP to parse report</p>
+                    </>
+                ) : ocrSuccess ? (
+                    <>
+                        <div className="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center mb-3 text-emerald-400">
+                            <CheckCircle2 size={24} />
+                        </div>
+                        <h4 className="text-sm font-bold text-emerald-400">Auto-Fill Complete!</h4>
+                        <p className="text-xs text-emerald-500/70 mt-1">Verify the extracted values below.</p>
+                    </>
+                ) : (
+                    <>
+                        <div className="w-12 h-12 rounded-full bg-indigo-500/10 flex items-center justify-center mb-3 text-indigo-400 transition-transform group-hover:scale-110">
+                            <FileText size={20} />
+                        </div>
+                        <h4 className="text-sm font-bold text-white">Auto-Fill from Report</h4>
+                        <p className="text-xs text-slate-400 mt-1">Upload PDF or Image to instantly fill clinical metrics</p>
+                    </>
+                )}
+                {ocrError && <p className="text-xs text-rose-400 mt-3 font-semibold">{ocrError}</p>}
+            </div>
+        </div>
+      </section>
+
       {/* Basic Information */}
       <section className="space-y-6">
         <div className="flex items-center gap-3">

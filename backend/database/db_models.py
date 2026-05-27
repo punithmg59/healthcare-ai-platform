@@ -122,3 +122,17 @@ class BrainTumorPrediction(Base):
     doctor_suggestions = Column(String)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+
+# =========================
+# EXTRACTED DOCUMENTS TABLE
+# =========================
+
+class ExtractedDocument(Base):
+    __tablename__ = "extracted_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String)
+    filepath = Column(String)
+    extracted_text = Column(String)
+    extracted_data_json = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)

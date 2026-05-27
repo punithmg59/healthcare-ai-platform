@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from models.heart.risk_engine import enhance_risk
 from services.groq_service import generate_medical_report
-from services.ocr_service import extract_medical_values, extract_all_text_with_medical_values
+from services.ocr_service import process_report_for_extraction
 from services.medical_data_extraction import get_medical_data_extractor
 
 # =========================
@@ -396,17 +396,21 @@ async def predict_heart_multimodal(
                     
                     # Extract text and medical values using OCR
                     try:
-                        if file_ext == '.pdf':
-                            # For PDFs, we need special handling
-                            extracted_text, medical_vals = extract_all_text_with_medical_values(file_path)
+                        # Reset cursor since it was read above
+                        await document.seek(0)
+                        
+                        ocr_result = await process_report_for_extraction(document)
+                        
+                        if ocr_result.get("success"):
+                            extracted_text = ocr_result.get("raw_text", "")
+                            medical_vals = ocr_result.get("extracted_data", {})
+                            
+                            all_extracted_texts[document.filename] = extracted_text
+                            # Merge medical values (later documents override earlier ones)
+                            ocr_extracted_data.update(medical_vals)
                         else:
-                            # For images
-                            extracted_text, medical_vals = extract_all_text_with_medical_values(file_path)
-                        
-                        all_extracted_texts[document.filename] = extracted_text
-                        # Merge medical values (later documents override earlier ones)
-                        ocr_extracted_data.update(medical_vals)
-                        
+                            print(f"OCR failed for {document.filename}: {ocr_result.get('error')}")
+                            
                     except Exception as e:
                         print(f"OCR processing error for {document.filename}: {e}")
                         # Continue with other documents even if one fails

@@ -7,13 +7,15 @@ import {
   Clock,
   Eye,
   Download,
-  MoreVertical,
+  Loader2,
   FileText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useNavigate } from 'react-router-dom';
+import useStore from '../store/useStore';
+import { extractReport } from '../services/api';
 
 function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -29,6 +31,7 @@ export default function DocumentUploader({ onFilesSelected }) {
   const [isDragging, setIsDragging] = useState(false);
   const [files, setFiles] = useState([]);
   const navigate = useNavigate();
+  const { formData, setFormData } = useStore();
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -64,24 +67,50 @@ export default function DocumentUploader({ onFilesSelected }) {
     
     setFiles(prev => [...prev, ...processedFiles]);
 
-    // Simulate upload progress
     for (const fileObj of processedFiles) {
-      let prog = 0;
-      const interval = setInterval(() => {
-        prog += 20;
-        if (prog >= 100) {
-          setFiles(prev => {
-            const next = prev.map(f => f.id === fileObj.id ? { ...f, progress: 100, status: 'completed' } : f);
-            if (onFilesSelected) {
-              onFilesSelected(next.filter(f => f.status === 'completed').map(f => f.originalFile));
+      // 1. Simulate fast visual upload progress
+      await new Promise(resolve => {
+        let prog = 0;
+        const interval = setInterval(() => {
+          prog += 25;
+          if (prog >= 100) {
+            clearInterval(interval);
+            resolve();
+          } else {
+            setFiles(prev => prev.map(f => f.id === fileObj.id ? { ...f, progress: prog } : f));
+          }
+        }, 150);
+      });
+
+      // 2. OCR Extraction Phase
+      const isExtractable = ['PDF', 'JPG', 'JPEG', 'PNG'].includes(fileObj.type);
+      if (isExtractable) {
+        setFiles(prev => prev.map(f => f.id === fileObj.id ? { ...f, status: 'extracting', progress: 100 } : f));
+        
+        try {
+          const payload = new FormData();
+          payload.append('file', fileObj.originalFile);
+          
+          const response = await extractReport(payload);
+          if (response?.data?.success) {
+            const extracted = response.data.extracted_data;
+            if (Object.keys(extracted).length > 0) {
+              setFormData({ ...formData, ...extracted });
             }
-            return next;
-          });
-          clearInterval(interval);
-        } else {
-          setFiles(prev => prev.map(f => f.id === fileObj.id ? { ...f, progress: prog } : f));
+          }
+        } catch (err) {
+          console.error("OCR Extraction failed for", fileObj.name, err);
         }
-      }, 200);
+      }
+
+      // 3. Mark as completed and notify parent
+      setFiles(prev => {
+        const next = prev.map(f => f.id === fileObj.id ? { ...f, progress: 100, status: 'completed' } : f);
+        if (onFilesSelected) {
+          onFilesSelected(next.filter(f => f.status === 'completed').map(f => f.originalFile));
+        }
+        return next;
+      });
     }
   };
 
@@ -155,13 +184,20 @@ export default function DocumentUploader({ onFilesSelected }) {
                 className="p-4 rounded-2xl bg-slate-900/60 border border-white/5 flex items-center gap-4 group"
               >
                 <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center shrink-0">
-                  {file.status === 'completed' ? <CheckCircle2 size={20} className="text-emerald-500" /> : <Clock size={20} className="text-amber-500 animate-pulse" />}
+                  {file.status === 'completed' ? (
+                    <CheckCircle2 size={20} className="text-emerald-500" />
+                  ) : file.status === 'extracting' ? (
+                    <Loader2 size={20} className="text-indigo-400 animate-spin" />
+                  ) : (
+                    <Clock size={20} className="text-amber-500 animate-pulse" />
+                  )}
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-white truncate">{file.name}</p>
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-[10px] font-bold text-slate-500 bg-slate-800 px-1.5 py-0.5 rounded">{file.type}</span>
                     <span className="text-[11px] text-slate-500">{file.size}</span>
+                    {file.status === 'extracting' && <span className="text-[10px] text-indigo-400 font-semibold ml-2">Extracting metrics...</span>}
                   </div>
                   {file.status === 'uploading' && (
                     <div className="w-full h-1 bg-slate-800 rounded-full mt-2 overflow-hidden">
@@ -169,6 +205,15 @@ export default function DocumentUploader({ onFilesSelected }) {
                         initial={{ width: 0 }}
                         animate={{ width: `${file.progress}%` }}
                         className="h-full bg-primary" 
+                      />
+                    </div>
+                  )}
+                  {file.status === 'extracting' && (
+                    <div className="w-full h-1 bg-slate-800 rounded-full mt-2 overflow-hidden relative">
+                      <motion.div 
+                        animate={{ x: ["-100%", "200%"] }}
+                        transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                        className="absolute inset-y-0 left-0 w-1/2 bg-indigo-500/50 rounded-full" 
                       />
                     </div>
                   )}

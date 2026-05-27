@@ -10,7 +10,8 @@ async def health_check():
 @router.get("/models/status")
 async def model_status():
     return {
-        "xray_model_loaded": model_loader.get_xray_model() is not None,
-        "ct_model_loaded": model_loader.get_ct_model() is not None,
+        "xray_model_loaded": model_loader.xray_model is not None,
+        "ct_model_loaded": model_loader.ct_model is not None,
+        "mri_model_loaded": model_loader.mri_model is not None,
         "backend_status": "ready"
     }
